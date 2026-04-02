@@ -1,5 +1,5 @@
-import sys
-import socket
+import sys #Provides access to system-specific parameters and functions
+import socket #Enables low-level network communications, allowing you to create TCP/UDP connections, servers, and clients
 from datetime import datetime
 # Import necessary UI components from PyQt6 for the graphical interface
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,

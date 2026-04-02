@@ -1,7 +1,7 @@
 import socket  # Provides access to the BSD socket interface for network connections
 from concurrent.futures import ThreadPoolExecutor, as_completed  # Enables multi-threading for faster scanning
 from datetime import datetime  # Used to timestamp the end of the scan
-from PyQt6.QtCore import QObject, pyqtSignal  # Integration with Qt framework for GUI updates
+from PyQt6.QtCore import QObject, pyqtSignal  # Integration with Qt framework for GUI
 
 # A mapping of common ports to security advice and descriptions
 SUGGESTIONS = {
