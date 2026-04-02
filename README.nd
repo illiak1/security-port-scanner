@@ -1,0 +1,55 @@
+Sentinel Port Scanner Pro + Banner Grabbing
+Sentinel Port Scanner is a multi-threaded, GUI-based network analysis tool designed for security auditing and network discovery. It features a modern "dark mode" interface, banner grabbing capabilities, and an automated security risk assessment engine.
+
+🚀 Features
+Multi-Threaded Scanning: Leverages ThreadPoolExecutor to scan hundreds of ports simultaneously without freezing the UI.
+
+Banner Grabbing: Attempts to retrieve service identification strings to identify software versions.
+
+Security Audit Report: Automatically calculates a "Security Score" based on found open ports and known vulnerabilities.
+
+Export Options: Save scan results as a professional HTML Report (with color-coded risk levels) or a plain Text file.
+
+Port Presets: Quick selection for Common (1-1024), Web (80, 443, 8080), or Full (1-65535) port ranges.
+
+Real-time Monitor: Live status updates and progress bar tracking.
+
+🛠️ Installation
+Prerequisites
+Python 3.8 or higher
+
+pip (Python package manager)
+
+Dependencies
+Install the required library for the graphical interface:
+
+Bash
+pip install PyQt6
+📂 Project Structure
+main.py: The entry point of the application containing the CyberToolGUI class and UI logic.
+
+scanner_worker.py: The backend engine containing ScannerWorker, handling the socket connections and multi-threading.
+
+🖥️ Usage
+Run the application:
+
+Bash
+python main.py
+Enter Target: Input an IP address (e.g., 192.168.1.1) or a hostname (e.g., google.com).
+
+Select Range: Use a preset or manually enter the start and end ports.
+
+Start Scan: Click START SCAN. Results will populate the terminal area in real-time.
+
+Analyze & Save: Once finished, view the Security Audit and click SAVE REPORT to export an HTML summary.
+
+🛡️ Security Assessment Logic
+The tool evaluates risk based on:
+
+Port Sensitivity: Known "high-risk" ports (like 21, 445, 3389) carry higher weight.
+
+Banner Matching: Detects specific outdated versions (e.g., vsftpd 2.3.4) that are historically vulnerable to exploits.
+
+⚠️ Disclaimer
+For Educational and Authorized Testing Only.
+Only use this tool on networks and devices you own or have explicit, written permission to test. Unauthorized port scanning can be seen as a precursor to an attack and may result in legal consequences or being blocked by ISPs/Firewalls.
