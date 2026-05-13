@@ -25,7 +25,7 @@ class CyberToolGUI(QMainWindow):
 
     def initUI(self):
         """Sets up the window properties, styles, and layout components."""
-        self.setWindowTitle("Sentinel Port Scanner Pro + Banner Grabbing")
+        self.setWindowTitle("Sentinel Port Scanner Pro")
         self.setMinimumSize(850, 900)
         
         # Central widget acts as the container for all other UI elements
@@ -84,7 +84,7 @@ class CyberToolGUI(QMainWindow):
         
         # Input field for the target URL or IP address
         self.target_input = QLineEdit()
-        self.target_input.setPlaceholderText("Enter Target IP or Hostname (e.g., google.com)...")
+        self.target_input.setPlaceholderText("Enter Target IP or Hostname (e.g., google.com or 192.168.1.1)...")
         
         # Layout for port range selection and presets
         preset_layout = QHBoxLayout()
@@ -269,6 +269,8 @@ class CyberToolGUI(QMainWindow):
         self.progress_bar.setValue(0)
 
     def on_scan_finished(self, found_ports):
+        self.output_area.append(f"[*] Total Open Ports Found: {len(found_ports)}")
+
         """Callback triggered when the scanning worker finishes its task."""
         self.status_monitor.setText("Scan Complete.")
         self.stop_scanning()
