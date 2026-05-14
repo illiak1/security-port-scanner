@@ -36,11 +36,26 @@ class ScannerWorker(QObject):
     def grab_banner(self, s):
         """Attempts to retrieve the service identification string (banner) from an open socket."""
         try:
-            s.send(b'Hello\r\n')  # Send a generic probe to trigger a response
-            banner = s.recv(1024).decode(errors='ignore').strip()
+            s.settimeout(1)
+
+            # Send a harmless probe
+            try:
+                s.send(b"\r\n")
+            except:
+                pass
+
+
+            # Try to read whatever the service already sent    
+            try:    
+                banner = s.recv(1024).decode(errors='ignore').strip()
+            except:
+                return None
+            
             return banner if banner else None
+        
         except:
-            return None
+            return None    
+        
 
     def check_port(self, target, port):
         """Attempts to connect to a specific port on the target IP."""
@@ -61,7 +76,16 @@ class ScannerWorker(QObject):
                         service = "unknown"
                     
                     # Try to get more info via banner grabbing
-                    banner = self.grab_banner(s)
+                    banner = None
+
+                    if port == 80 or port == 8080:
+                        try:
+                            s.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                            banner = s.recv(1024).decode(errors="ignore").strip()
+                        except:
+                            banner = None
+                    else:
+                        banner = self.grab_banner(s)
                     return port, service, banner
         except:
             return None
@@ -98,7 +122,7 @@ class ScannerWorker(QObject):
                     port, service, banner = res
                     found_ports.append(port)
                     output = f"[+] [OPEN] Port {port:<5} | Service: {service}"
-                    if banner:
+                    if banner and banner.strip():
                         output += f"\n    ┗━ [BANNER]: {banner[:100]}"
                     self.log_signal.emit(output)
 
