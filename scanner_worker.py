@@ -58,38 +58,33 @@ class ScannerWorker(QObject):
         
 
     def check_port(self, target, port):
-        """Attempts to connect to a specific port on the target IP."""
+        """Attempts to retrieve the service identification string (banner) from an open socket."""
         if not self._is_running:
             return None
-        try:
-            # Create a TCP socket using AF_INET (IPv4) and SOCK_STREAM (TCP)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.settimeout(self.timeout)
-                # connect_ex returns 0 if the connection is successful (port is open)
-                result = s.connect_ex((target, port))
-                
-                if result == 0:
-                    try:
-                        # Attempt to resolve the common service name for this port
-                        service = socket.getservbyport(port)
-                    except:
-                        service = "unknown"
-                    
-                    # Try to get more info via banner grabbing
-                    banner = None
 
-                    if port == 80 or port == 8080:
-                        try:
-                            s.send(b"HEAD / HTTP/1.0\r\n\r\n")
-                            banner = s.recv(1024).decode(errors="ignore").strip()
-                        except:
-                            banner = None
-                    else:
-                        banner = self.grab_banner(s)
-                    return port, service, banner
-        except:
+        try:
+            with socket.create_connection((target, port), timeout=self.timeout) as s:
+                try:
+                    service = socket.getservbyport(port)
+                except OSError:
+                    service = "unknown"
+
+                banner = None
+
+                # HTTP probing
+                if port in (80, 8080, 443):
+                    try:
+                        s.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+                        banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
+                    except socket.timeout:
+                        pass
+                else:
+                    banner = self.grab_banner(s)
+
+                return port, service, banner
+
+        except (socket.timeout, ConnectionRefusedError, OSError):
             return None
-        return None
 
     def run_scan(self, target, start_port, end_port):
         """The main loop that orchestrates the multi-threaded scanning process."""
