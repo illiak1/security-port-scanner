@@ -2,7 +2,7 @@ import socket  # Provides access to the BSD socket interface for network connect
 from concurrent.futures import ThreadPoolExecutor, as_completed  # Enables multi-threading for faster scanning
 from datetime import datetime  # Used to timestamp the end of the scan
 from PyQt6.QtCore import QObject, pyqtSignal  # Integration with Qt framework for GUI
-
+import ssl
 # A mapping of common ports to security advice and descriptions
 SUGGESTIONS = {
     21: "FTP: Insecure. Suggest switching to SFTP (Port 22) or FTPS.",
@@ -41,14 +41,14 @@ class ScannerWorker(QObject):
             # Send a harmless probe
             try:
                 s.send(b"\r\n")
-            except:
+            except OSError:
                 pass
 
 
             # Try to read whatever the service already sent    
             try:    
                 banner = s.recv(1024).decode(errors='ignore').strip()
-            except:
+            except (socket.timeout, OSError):
                 return None
             
             return banner if banner else None
@@ -72,11 +72,28 @@ class ScannerWorker(QObject):
                 banner = None
 
                 # HTTP probing
-                if port in (80, 8080, 443):
+                if port in (80, 8080):
                     try:
-                        s.sendall(b"HEAD / HTTP/1.0\r\n\r\n")
+                        s.sendall(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
                         banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
-                    except socket.timeout:
+                    except (socket.timeout, OSError):
+                        pass
+
+                elif port == 443:
+                    try:
+                        context = ssl.create_default_context()
+
+                        with context.wrap_socket(s, server_hostname=target) as tls_sock:
+                            tls_sock.sendall(
+                                b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n"
+                            )
+
+                            banner = tls_sock.recv(1024).decode(
+                                "utf-8",
+                                errors="ignore"
+                            ).strip()
+
+                    except (ssl.SSLError, socket.timeout, OSError):
                         pass
                 else:
                     banner = self.grab_banner(s)
@@ -103,13 +120,14 @@ class ScannerWorker(QObject):
         total = len(ports)
 
         # ThreadPoolExecutor manages a pool of threads to scan multiple ports simultaneously
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=min(100, total)) as executor:
             # Map each port check to a future object
             future_to_port = {executor.submit(self.check_port, target_ip, p): p for p in ports}
             
             # As each thread completes, process the result
             for i, future in enumerate(as_completed(future_to_port)):
                 if not self._is_running:
+                    executor.shutdown(wait=False, cancel_futures=True)
                     break
                 
                 res = future.result()
