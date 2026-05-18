@@ -41,6 +41,7 @@ class ScannerWorker(QObject):
             # Send a harmless probe
             try:
                 s.send(b"\r\n")
+                time.sleep(0.1)
             except OSError:
                 pass
 
@@ -110,7 +111,8 @@ class ScannerWorker(QObject):
 
         try:
             # Convert hostname (e.g., 'google.com') to an IP address
-            target_ip = socket.gethostbyname(target)
+            addr_info = socket.getaddrinfo(target, None)[0]
+            target_ip = addr_info[4][0]
         except socket.gaierror:
             self.log_signal.emit("[!] Error: Resolution failed.")
             self.finished_signal.emit([])
@@ -120,7 +122,7 @@ class ScannerWorker(QObject):
         total = len(ports)
 
         # ThreadPoolExecutor manages a pool of threads to scan multiple ports simultaneously
-        with ThreadPoolExecutor(max_workers=min(100, total)) as executor:
+        with ThreadPoolExecutor(max_workers=min(64, (end_port - start_port + 1))) as executor:
             # Map each port check to a future object
             future_to_port = {executor.submit(self.check_port, target_ip, p): p for p in ports}
             
@@ -147,7 +149,7 @@ class ScannerWorker(QObject):
         # Finalize and notify the UI
         self.log_signal.emit(f"\n--- Scan Finished: {datetime.now().strftime('%H:%M:%S')} ---")
         self.finished_signal.emit(found_ports)
-
+        
     def stop(self):
         """Sets the running flag to False to halt the scan."""
         self._is_running = False
