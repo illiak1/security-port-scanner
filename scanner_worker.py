@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed  # Enables multi
 from datetime import datetime  # Used to timestamp the end of the scan
 from PyQt6.QtCore import QObject, pyqtSignal  # Integration with Qt framework for GUI
 import ssl
+import time
 # A mapping of common ports to security advice and descriptions
 SUGGESTIONS = {
     21: "FTP: Insecure. Suggest switching to SFTP (Port 22) or FTPS.",
@@ -58,12 +59,14 @@ class ScannerWorker(QObject):
             return None    
         
 
+    
     def check_port(self, target, port):
-        """Attempts to retrieve the service identification string (banner) from an open socket."""
+        """Attempts to identify the service and retrieve its banner/headers."""
         if not self._is_running:
             return None
 
         try:
+            # Establish the base TCP connection
             with socket.create_connection((target, port), timeout=self.timeout) as s:
                 try:
                     service = socket.getservbyport(port)
@@ -80,23 +83,22 @@ class ScannerWorker(QObject):
                     except (socket.timeout, OSError):
                         pass
 
+                # HTTPS probing
                 elif port == 443:
                     try:
+                        # Disable strict verification so self-signed certs don't crash the scan
                         context = ssl.create_default_context()
+                        context.check_hostname = False
+                        context.verify_mode = ssl.CERT_NONE
 
                         with context.wrap_socket(s, server_hostname=target) as tls_sock:
-                            tls_sock.sendall(
-                                b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n"
-                            )
-
-                            banner = tls_sock.recv(1024).decode(
-                                "utf-8",
-                                errors="ignore"
-                            ).strip()
-
+                            tls_sock.settimeout(self.timeout) # Enforce timeout on TLS handshake
+                            tls_sock.sendall(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                            banner = tls_sock.recv(1024).decode("utf-8", errors="ignore").strip()
                     except (ssl.SSLError, socket.timeout, OSError):
                         pass
                 else:
+                    # Pass-through to general banner grabber
                     banner = self.grab_banner(s)
 
                 return port, service, banner
@@ -138,7 +140,9 @@ class ScannerWorker(QObject):
                     found_ports.append(port)
                     output = f"[+] [OPEN] Port {port:<5} | Service: {service}"
                     if banner and banner.strip():
-                        output += f"\n    ┗━ [BANNER]: {banner[:100]}"
+                        # Grabs only the first line and strips messy whitespaces
+                        clean_banner = banner.splitlines()[0][:100].strip()
+                        output += f"\n    ┗━ [BANNER]: {clean_banner}"
                     self.log_signal.emit(output)
 
                 # Update the UI on progress
