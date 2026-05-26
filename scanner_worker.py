@@ -41,8 +41,8 @@ class ScannerWorker(QObject):
 
             # Send a harmless probe
             try:
-                s.send(b"\r\n")
-                time.sleep(0.1)
+                s.sendall(b"\r\n")
+                s.settimeout(0.3)
             except OSError:
                 pass
 
@@ -55,7 +55,7 @@ class ScannerWorker(QObject):
             
             return banner if banner else None
         
-        except:
+        except (socket.timeout, OSError, UnicodeDecodeError):
             return None    
         
 
@@ -78,7 +78,8 @@ class ScannerWorker(QObject):
                 # HTTP probing
                 if port in (80, 8080):
                     try:
-                        s.sendall(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                        request = f"HEAD / HTTP/1.0\r\nHost: {target}\r\n\r\n".encode()
+                        s.sendall(request)
                         banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
                     except (socket.timeout, OSError):
                         pass
@@ -93,7 +94,8 @@ class ScannerWorker(QObject):
 
                         with context.wrap_socket(s, server_hostname=target) as tls_sock:
                             tls_sock.settimeout(self.timeout) # Enforce timeout on TLS handshake
-                            tls_sock.sendall(b"HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+                            request = f"HEAD / HTTP/1.0\r\nHost: {target}\r\n\r\n".encode()
+                            tls_sock.sendall(request)
                             banner = tls_sock.recv(1024).decode("utf-8", errors="ignore").strip()
                     except (ssl.SSLError, socket.timeout, OSError):
                         pass
@@ -133,8 +135,11 @@ class ScannerWorker(QObject):
                 if not self._is_running:
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
-                
-                res = future.result()
+                try:
+                    res = future.result()
+                except Exception as e:
+                    self.log_signal.emit(f"[!] Worker error: {e}")
+                    continue    
                 if res:
                     port, service, banner = res
                     found_ports.append(port)
@@ -154,6 +159,7 @@ class ScannerWorker(QObject):
         self.log_signal.emit(f"\n--- Scan Finished: {datetime.now().strftime('%H:%M:%S')} ---")
         self.finished_signal.emit(found_ports)
         
+
     def stop(self):
         """Sets the running flag to False to halt the scan."""
         self._is_running = False
