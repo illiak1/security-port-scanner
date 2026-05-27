@@ -125,15 +125,16 @@ class ScannerWorker(QObject):
         ports = range(start_port, end_port + 1)
         total = len(ports)
 
-        # ThreadPoolExecutor manages a pool of threads to scan multiple ports simultaneously
-        with ThreadPoolExecutor(max_workers=min(64, (end_port - start_port + 1))) as executor:
+        with ThreadPoolExecutor(max_workers=100) as executor:
             # Map each port check to a future object
             future_to_port = {executor.submit(self.check_port, target_ip, p): p for p in ports}
             
             # As each thread completes, process the result
             for i, future in enumerate(as_completed(future_to_port)):
                 if not self._is_running:
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    # Explicitly cancel all pending tasks
+                    for f in future_to_port:
+                        f.cancel()
                     break
                 try:
                     res = future.result()
