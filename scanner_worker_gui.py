@@ -146,24 +146,18 @@ class CyberToolGUI(QMainWindow):
 
     def apply_preset(self, index):
         """Sets the start and end port inputs based on a selected dropdown/button index."""
-        # Dictionary mapping index to specific port ranges (Common, Web, All)
         ranges = {0: ("1", "1024"), 1: ("80", "8080"), 2: ("1", "65535")}
         if index in ranges:
-            # Update the UI text fields with the selected range
             self.start_port.setText(ranges[index][0])
             self.end_port.setText(ranges[index][1])
 
     def get_local_ip(self):
         """Attempts to find the machine's local IP address by creating a dummy socket."""
         try:
-            # Create a UDP socket (DGRAM)
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                # Connect to a public DNS (8.8.8.8) to see which local interface is used
-                # No data is actually sent
                 s.connect(("8.8.8.8", 80))
                 return s.getsockname()[0]
-        except:
-            # Fallback to localhost if no network connection is available
+        except Exception:
             return "127.0.0.1"
 
     def toggle_scan(self):
@@ -175,26 +169,31 @@ class CyberToolGUI(QMainWindow):
 
     def start_scanning(self):
         """Initializes and launches the background scanning thread."""
-        # Get and clean the target input (IP or Domain)
         target = self.target_input.text().strip()
         if not target:
             self.output_area.append("[!] Error: Target is required.")
             return
 
-        # Update UI button to 'Stop' mode with a red color
+        # Safe parsing for integers to protect against bad user inputs
+        try:
+            s_port = int(self.start_port.text().strip())
+            e_port = int(self.end_port.text().strip())
+        except ValueError:
+            self.output_area.append("[!] Error: Port range fields must contain valid integers.")
+            return
+
+        # Update UI button to 'Stop' mode
         self.scan_btn.setText("STOP SCAN")
         self.scan_btn.setStyleSheet("background-color: #da3633;")
         self.output_area.append(f"\n--- Scan Started: {datetime.now().strftime('%H:%M:%S')} ---")
         
-        # Setup multi-threading to keep the UI responsive during the scan
+        # Setup multi-threading
         self.thread = QThread()
         self.worker = ScannerWorker()
         self.worker.moveToThread(self.thread)
         
-        # Connect signals: when thread starts, call run_scan with UI parameters
-        self.thread.started.connect(lambda: self.worker.run_scan(target, int(self.start_port.text()), int(self.end_port.text())))
+        self.thread.started.connect(lambda: self.worker.run_scan(target, s_port, e_port))
         
-        # Connect worker signals to update the UI (logs, progress bar, status text)
         self.worker.log_signal.connect(self.output_area.append)
         self.worker.progress_signal.connect(self.progress_bar.setValue)
         self.worker.current_port_signal.connect(lambda p: self.status_monitor.setText(f"Scanning Port: {p}..."))
@@ -208,13 +207,11 @@ class CyberToolGUI(QMainWindow):
         self.output_area.append("🛡️ SECURITY AUDIT REPORT")
         self.output_area.append("="*40)
 
-        # Define 'risk weights' for specific ports (3 = high risk, 1 = low risk)
         risk_points = {
             21: 3, 22: 1, 23: 3, 25: 2, 53: 2, 80: 2,
             443: 1, 445: 3, 3306: 3, 3389: 3, 8080: 2
         }
 
-        # Known banners/signatures associated with vulnerabilities
         risky_versions = {
             "OpenSSH_7.2": "⚠️ Outdated SSH version detected.",
             "vsftpd 2.3.4": "⚠️ Known vulnerable FTP version.",
@@ -225,12 +222,12 @@ class CyberToolGUI(QMainWindow):
         risk_sum = 0
 
         for port in ports:
-            # Get specific advice for this port or use a default message
             suggestion = SUGGESTIONS.get(port, "Custom Service: Verify intent. Close if not needed.")
-            risk_sum += risk_points.get(port, 2) # Default to risk 2 if not in list
+            risk_sum += risk_points.get(port, 2)
             
-            # Check if the service banner contains a risky version signature
-            banner = getattr(self.worker, 'last_banner', None)
+            # Note: This checks the worker's status. If scanner_worker doesn't track 
+            # maps individually, this variable might be static or missing.
+            banner = getattr(self.worker, 'last_banner', 'N/A')
             risk_tag = ""
             if banner:
                 for sig, msg in risky_versions.items():
@@ -239,11 +236,9 @@ class CyberToolGUI(QMainWindow):
                         break
             self.output_area.append(f"• Port {port}: {suggestion}{risk_tag}")
 
-        # Calculate a percentage-based security score
         max_possible_risk = max(len(ports) * 3, 1)
         security_score = max(0, total_score - int((risk_sum / max_possible_risk) * 100))
 
-        # Output the final security verdict
         self.output_area.append("\n" + "-"*40)
         self.output_area.append(f"💡 Target Security Score: {security_score}%")
         
@@ -263,34 +258,30 @@ class CyberToolGUI(QMainWindow):
             self.thread.quit()
             self.thread.wait()
         
-        # Reset UI button to 'Start' mode with a green color
         self.scan_btn.setText("START SCAN")
         self.scan_btn.setStyleSheet("background-color: #238636;")
         self.progress_bar.setValue(0)
 
     def on_scan_finished(self, found_ports):
-        self.output_area.append(f"[*] Total Open Ports Found: {len(found_ports)}")
-
         """Callback triggered when the scanning worker finishes its task."""
+        self.output_area.append(f"[*] Total Open Ports Found: {len(found_ports)}")
         self.status_monitor.setText("Scan Complete.")
         self.stop_scanning()
         
         if found_ports:
-            # Store results and trigger the security analysis
-            self.worker.found_ports = found_ports
+            if self.worker:
+                self.worker.found_ports = found_ports
             self.analyze_results(found_ports)
         else:
             self.output_area.append("[*] No open ports found.")
 
     def save_log(self):
         """Exports the scan results to either an HTML report or a plain text file."""
-        # Ensure there is data to save
         ports = getattr(self.worker, 'found_ports', [])
         if not ports:
             self.output_area.append("[!] No scan data available to save.")
             return
 
-        # Open a file dialog to choose save location and format
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Results",
@@ -301,7 +292,6 @@ class CyberToolGUI(QMainWindow):
         if not path:
             return
 
-        # Handle different file extensions
         if path.endswith(".html"):
             self.save_html_report(ports, path)
         else:
@@ -309,113 +299,96 @@ class CyberToolGUI(QMainWindow):
                 f.write(self.output_area.toPlainText())
             self.output_area.append(f"[*] Report saved to {path}")
 
-    # Define a method to generate and save an HTML-based security report
-def save_html_report(self, ports, filename="scan_report.html"):
-    # Capture the current date and time for the report header
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Map specific port numbers to risk weights (1 = Low, 2 = Medium, 3 = High)
-    risk_points = {
-        21: 3, 22: 1, 23: 3, 25: 2, 53: 2, 80: 2,
-        443: 1, 445: 3, 3306: 3, 3389: 3, 8080: 2
-    }
-
-    # Dictionary containing specific service version strings that indicate vulnerabilities
-    risky_versions = {
-        "OpenSSH_7.2": "⚠️ Outdated SSH version detected.",
-        "vsftpd 2.3.4": "⚠️ Known vulnerable FTP version.",
-        "Microsoft-HTTPAPI": "⚠️ Possible Windows HTTP vulnerability."
-    }
-
-    # Calculate the total risk value of the discovered open ports
-    # Defaults to a risk of 2 if the port is not in the risk_points map
-    risk_sum = sum(risk_points.get(p, 2) for p in ports)
-    
-    # Calculate the maximum possible risk to normalize the score
-    max_possible_risk = max(len(ports) * 3, 1)
-    
-    # Convert the risk total into a percentage-based security score (100 is best)
-    security_score = max(0, 100 - int((risk_sum / max_possible_risk) * 100))
-
-    # Construct the HTML structure, including CSS for dark-mode styling and risk coloring
-    html = f"""
-    <html>
-    <head>
-        <title>Security Scan Report</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; background: #0d1117; color: #d1d5da; }}
-            h1 {{ color: #238636; }}
-            table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
-            th, td {{ border: 1px solid #30363d; padding: 8px; text-align: left; }}
-            th {{ background-color: #161b22; }}
-            tr:nth-child(even) {{ background-color: #0d1117; }}
-            .risk-low {{ color: #2ea043; font-weight: bold; }}
-            .risk-medium {{ color: #d29922; font-weight: bold; }}
-            .risk-high {{ color: #da3633; font-weight: bold; }}
-        </style>
-    </head>
-    <body>
-        <h1>🛡️ Security Scan Report</h1>
-        <p><strong>Target:</strong> {self.target_input.text()}</p>
-        <p><strong>Scan Time:</strong> {now}</p>
-        <p><strong>Security Score:</strong> {security_score}%</p>
-        <table>
-            <tr>
-                <th>Port</th>
-                <th>Service</th>
-                <th>Banner</th>
-                <th>Risk</th>
-            </tr>
-    """
-
-    # Iterate through found ports to build individual table rows
-    for port in ports:
-        # Get service name from global SUGGESTIONS or default to 'Custom Service'
-        suggestion = SUGGESTIONS.get(port, "Custom Service")
-        # Retrieve the service banner captured during the scan
-        banner = getattr(self.worker, 'last_banner', 'N/A')
+    # FIXED: Indented properly to sit within the CyberToolGUI class namespace
+    def save_html_report(self, ports, filename="scan_report.html"):
+        """Generates and saves an HTML-based security report."""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Determine CSS class based on risk points
-        risk_class = "risk-medium"
-        if risk_points.get(port, 2) == 3:
-            risk_class = "risk-high"
-        elif risk_points.get(port, 2) == 1:
-            risk_class = "risk-low"
+        risk_points = {
+            21: 3, 22: 1, 23: 3, 25: 2, 53: 2, 80: 2,
+            443: 1, 445: 3, 3306: 3, 3389: 3, 8080: 2
+        }
 
-        # Check the banner string against known risky version signatures
-        risk_tag = ""
-        if banner:
-            for sig, msg in risky_versions.items():
-                if sig in banner:
-                    risk_tag = msg
-                    break
+        risky_versions = {
+            "OpenSSH_7.2": "⚠️ Outdated SSH version detected.",
+            "vsftpd 2.3.4": "⚠️ Known vulnerable FTP version.",
+            "Microsoft-HTTPAPI": "⚠️ Possible Windows HTTP vulnerability."
+        }
 
-        # Append the formatted row for this specific port to the HTML string
-        html += f"""
-            <tr>
-                <td>{port}</td>
-                <td>{suggestion}</td>
-                <td>{banner}</td>
-                <td class="{risk_class}">{risk_tag or risk_class.replace('risk-', '').capitalize()}</td>
-            </tr>
+        risk_sum = sum(risk_points.get(p, 2) for p in ports)
+        max_possible_risk = max(len(ports) * 3, 1)
+        security_score = max(0, 100 - int((risk_sum / max_possible_risk) * 100))
+
+        html = f"""
+        <html>
+        <head>
+            <title>Security Scan Report</title>
+            <style>
+                body {{ font-family: Arial, sans-serif; background: #0d1117; color: #d1d5da; }}
+                h1 {{ color: #238636; }}
+                table {{ border-collapse: collapse; width: 100%; margin-top: 20px; }}
+                th, td {{ border: 1px solid #30363d; padding: 8px; text-align: left; }}
+                th {{ background-color: #161b22; }}
+                tr:nth-child(even) {{ background-color: #0d1117; }}
+                .risk-low {{ color: #2ea043; font-weight: bold; }}
+                .risk-medium {{ color: #d29922; font-weight: bold; }}
+                .risk-high {{ color: #da3633; font-weight: bold; }}
+            </style>
+        </head>
+        <body>
+            <h1>🛡️ Security Scan Report</h1>
+            <p><strong>Target:</strong> {self.target_input.text()}</p>
+            <p><strong>Scan Time:</strong> {now}</p>
+            <p><strong>Security Score:</strong> {security_score}%</p>
+            <table>
+                <tr>
+                    <th>Port</th>
+                    <th>Service</th>
+                    <th>Banner</th>
+                    <th>Risk</th>
+                </tr>
         """
 
-    # Close the HTML tags
-    html += """
-        </table>
-    </body>
-    </html>
-    """
+        for port in ports:
+            suggestion = SUGGESTIONS.get(port, "Custom Service")
+            banner = getattr(self.worker, 'last_banner', 'N/A')
+            
+            risk_class = "risk-medium"
+            if risk_points.get(port, 2) == 3:
+                risk_class = "risk-high"
+            elif risk_points.get(port, 2) == 1:
+                risk_class = "risk-low"
 
-    # Write the completed HTML string to a file using UTF-8 encoding
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(html)
+            risk_tag = ""
+            if banner:
+                for sig, msg in risky_versions.items():
+                    if sig in banner:
+                        risk_tag = msg
+                        break
 
-    # Import the webbrowser module and open the report file in the system default browser
-    import webbrowser
-    webbrowser.open(filename)
+            html += f"""
+                <tr>
+                    <td>{port}</td>
+                    <td>{suggestion}</td>
+                    <td>{banner}</td>
+                    <td class="{risk_class}">{risk_tag or risk_class.replace('risk-', '').capitalize()}</td>
+                </tr>
+            """
 
-# Application entry point: setup and run the GUI
+        html += """
+            </table>
+        </body>
+        </html>
+        """
+
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(html)
+
+        import webbrowser
+        webbrowser.open(filename)
+
+
+# Application entry point
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = CyberToolGUI()
