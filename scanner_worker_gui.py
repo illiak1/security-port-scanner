@@ -174,6 +174,18 @@ class CyberToolGUI(QMainWindow):
             self.output_area.append("[!] Error: Target is required.")
             return
 
+        # VALIDATION OF HOST/IP ADDRESS
+        try:
+            # Trying to resolve name in IP. If you enter "sdfdsfdsf", 
+            #this method will cause an error and we will catch it safely.
+            socket.gethostbyname(target)
+        except socket.gaierror:
+            self.output_area.append(f"[!] Error: Unable to resolve host '{target}'. Please enter a valid IP or domain.")
+            return
+        except Exception as e:
+            self.output_area.append(f"[!] Error checking target: {e}")
+            return
+
         # Safe parsing for integers to protect against bad user inputs
         try:
             s_port = int(self.start_port.text().strip())
@@ -182,6 +194,11 @@ class CyberToolGUI(QMainWindow):
             self.output_area.append("[!] Error: Port range fields must contain valid integers.")
             return
 
+        # Checking port range logic (additional protection)
+        if s_port < 1 or e_port > 65535 or s_port > e_port:
+            self.output_area.append("[!] Error: Invalid port range (must be between 1 and 65535).")
+            return
+            
         # Update UI button to 'Stop' mode
         self.scan_btn.setText("STOP SCAN")
         self.scan_btn.setStyleSheet("background-color: #da3633;")
@@ -191,6 +208,9 @@ class CyberToolGUI(QMainWindow):
         self.thread = QThread()
         self.worker = ScannerWorker()
         self.worker.moveToThread(self.thread)
+
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
         
         self.thread.started.connect(lambda: self.worker.run_scan(target, s_port, e_port))
         
