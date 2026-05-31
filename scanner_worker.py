@@ -1,10 +1,9 @@
-import socket  # Provides access to the BSD socket interface for network connections
-from concurrent.futures import ThreadPoolExecutor, as_completed  # Enables multi-threading for faster scanning
-from datetime import datetime  # Used to timestamp the end of the scan
-from PyQt6.QtCore import QObject, pyqtSignal  # Integration with Qt framework for GUI
+import socket 
+from concurrent.futures import ThreadPoolExecutor, as_completed 
+from datetime import datetime 
+from PyQt6.QtCore import QObject, pyqtSignal 
 import ssl
-import time
-# A mapping of common ports to security advice and descriptions
+
 SUGGESTIONS = {
     21: "FTP: Insecure. Suggest switching to SFTP (Port 22) or FTPS.",
     22: "SSH: Secure, but Ensure key-based auth is used and root login is disabled.",
@@ -21,53 +20,50 @@ SUGGESTIONS = {
     8080: "HTTP Proxy/Alt: Often used for dev. Ensure it's not exposing sensitive debug info."
 }
 
-# Worker class that handles the scanning logic in a separate thread to keep the GUI responsive
 class ScannerWorker(QObject):
-    # Signals to communicate back to the main UI thread
-    log_signal = pyqtSignal(str)          # Sends text logs to the UI
-    progress_signal = pyqtSignal(int)     # Sends percentage completion (0-100)
-    current_port_signal = pyqtSignal(int) # Sends the port currently being scanned
-    finished_signal = pyqtSignal(list)    # Sends the final list of open ports when done
+    log_signal = pyqtSignal(str)          
+    progress_signal = pyqtSignal(int)     
+    current_port_signal = pyqtSignal(int) 
+    finished_signal = pyqtSignal(dict)    
 
     def __init__(self):
         super().__init__()
-        self._is_running = True  # Flag to allow stopping the scan prematurely
-        self.timeout = 0.8       # Seconds to wait for a response from a port
+        self._is_running = True  
+        self.timeout = 0.8       
+        self._executor = None  # Reference to cancel threads gracefully
 
     def grab_banner(self, s):
-        """Attempts to retrieve the service identification string (banner) from an open socket."""
+        """Attempts to retrieve the service identification string."""
         try:
-            s.settimeout(1)
-
-            # Send a harmless probe
+            s.settimeout(1.0)
             try:
                 s.sendall(b"\r\n")
                 s.settimeout(0.3)
             except OSError:
                 pass
 
-
-            # Try to read whatever the service already sent    
-            try:    
-                banner = s.recv(1024).decode(errors='ignore').strip()
-            except (socket.timeout, OSError):
-                return None
-            
+            banner = s.recv(1024).decode(errors='ignore').strip()
             return banner if banner else None
-        
-        except (socket.timeout, OSError, UnicodeDecodeError):
+        except (socket.timeout, OSError):
             return None    
-        
 
-    
-    def check_port(self, target, port):
+    def _probe_http(self, sock, hostname):
+        """Helper to send a lightweight HEAD request."""
+        try:
+            request = f"HEAD / HTTP/1.0\r\nHost: {hostname}\r\nUser-Agent: SecurityScanner/1.0\r\n\r\n".encode()
+            sock.sendall(request)
+            return sock.recv(1024).decode("utf-8", errors="ignore").strip()
+        except (socket.timeout, OSError):
+            return None
+
+    def check_port(self, target_ip, target_hostname, port):
         """Attempts to identify the service and retrieve its banner/headers."""
         if not self._is_running:
             return None
 
         try:
-            # Establish the base TCP connection
-            with socket.create_connection((target, port), timeout=self.timeout) as s:
+            # Connect always using IP to eliminate repetitive internal thread DNS looks
+            with socket.create_connection((target_ip, port), timeout=self.timeout) as s:
                 try:
                     service = socket.getservbyport(port)
                 except OSError:
@@ -77,90 +73,96 @@ class ScannerWorker(QObject):
 
                 # HTTP probing
                 if port in (80, 8080):
-                    try:
-                        request = f"HEAD / HTTP/1.0\r\nHost: {target}\r\n\r\n".encode()
-                        s.sendall(request)
-                        banner = s.recv(1024).decode("utf-8", errors="ignore").strip()
-                    except (socket.timeout, OSError):
-                        pass
+                    banner = self._probe_http(s, target_hostname)
+                    if not banner:  # Fallback
+                        banner = self.grab_banner(s)
 
                 # HTTPS probing
                 elif port == 443:
                     try:
-                        # Disable strict verification so self-signed certs don't crash the scan
                         context = ssl.create_default_context()
                         context.check_hostname = False
                         context.verify_mode = ssl.CERT_NONE
 
-                        with context.wrap_socket(s, server_hostname=target) as tls_sock:
-                            tls_sock.settimeout(self.timeout) # Enforce timeout on TLS handshake
-                            request = f"HEAD / HTTP/1.0\r\nHost: {target}\r\n\r\n".encode()
-                            tls_sock.sendall(request)
-                            banner = tls_sock.recv(1024).decode("utf-8", errors="ignore").strip()
+                        # Pass target_hostname for exact SNI matching
+                        with context.wrap_socket(s, server_hostname=target_hostname) as tls_sock:
+                            tls_sock.settimeout(self.timeout)
+                            banner = self._probe_http(tls_sock, target_hostname)
                     except (ssl.SSLError, socket.timeout, OSError):
                         pass
                 else:
-                    # Pass-through to general banner grabber
                     banner = self.grab_banner(s)
 
                 return port, service, banner
-
         except (socket.timeout, ConnectionRefusedError, OSError):
             return None
 
     def run_scan(self, target, start_port, end_port):
-        """The main loop that orchestrates the multi-threaded scanning process."""
-        found_ports = []
+        """Orchestrates the multi-threaded scanning process."""
+        self._is_running = True
+        scan_results = {} 
         self.log_signal.emit(f"[*] Initializing deep scan on {target}...")
 
         try:
-            # Convert hostname (e.g., 'google.com') to an IP address
+            # Cache the underlying target IP and retain the original hostname string
             addr_info = socket.getaddrinfo(target, None)[0]
             target_ip = addr_info[4][0]
         except socket.gaierror:
             self.log_signal.emit("[!] Error: Resolution failed.")
-            self.finished_signal.emit([])
+            self.finished_signal.emit({})
             return
 
         ports = range(start_port, end_port + 1)
         total = len(ports)
 
+        if total == 0:
+            self.finished_signal.emit({})
+            return
+
+        # Use context manager but track the executor reference instance for cancellation
         with ThreadPoolExecutor(max_workers=100) as executor:
-            # Map each port check to a future object
-            future_to_port = {executor.submit(self.check_port, target_ip, p): p for p in ports}
+            self._executor = executor
+            future_to_port = {
+                executor.submit(self.check_port, target_ip, target, p): p for p in ports
+            }
             
-            # As each thread completes, process the result
             for i, future in enumerate(as_completed(future_to_port)):
+                current_p = future_to_port[future]
+                
                 if not self._is_running:
-                    # Explicitly cancel all pending tasks
-                    for f in future_to_port:
-                        f.cancel()
                     break
+                
                 try:
                     res = future.result()
                 except Exception as e:
-                    self.log_signal.emit(f"[!] Worker error: {e}")
+                    self.log_signal.emit(f"[!] Worker error on port {current_p}: {e}")
                     continue    
+                
                 if res:
                     port, service, banner = res
-                    found_ports.append(port)
+                    scan_results[port] = {"service": service, "banner": banner}
                     output = f"[+] [OPEN] Port {port:<5} | Service: {service}"
+                    
                     if banner and banner.strip():
-                        # Grabs only the first line and strips messy whitespaces
                         clean_banner = banner.splitlines()[0][:100].strip()
                         output += f"\n    ┗━ [BANNER]: {clean_banner}"
+                    
+                    # Append security quick-tip suggestion if known port
+                    if port in SUGGESTIONS:
+                        output += f"\n    ┗━ [NOTE]: {SUGGESTIONS[port]}"
+                        
                     self.log_signal.emit(output)
 
-                # Update the UI on progress
-                self.current_port_signal.emit(future_to_port[future])
+                self.current_port_signal.emit(current_p)
                 if i % 10 == 0 or i == total - 1:
                     self.progress_signal.emit(int(((i + 1) / total) * 100))
 
-        # Finalize and notify the UI
         self.log_signal.emit(f"\n--- Scan Finished: {datetime.now().strftime('%H:%M:%S')} ---")
-        self.finished_signal.emit(found_ports)
-        
+        self.finished_signal.emit(scan_results)
 
     def stop(self):
-        """Sets the running flag to False to halt the scan."""
+        """Immediately halts the tracking iteration loop and voids un-run worker threads."""
         self._is_running = False
+        if self._executor:
+            # cancel_futures=True safely dumps pending tasks in python 3.9+
+            self._executor.shutdown(wait=False, cancel_futures=True)
