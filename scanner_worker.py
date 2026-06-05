@@ -1,4 +1,6 @@
 import socket 
+import subprocess
+import platform
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 from datetime import datetime 
 from PyQt6.QtCore import QObject, pyqtSignal 
@@ -30,7 +32,21 @@ class ScannerWorker(QObject):
         super().__init__()
         self._is_running = True  
         self.timeout = 0.8       
-        self._executor = None  # Reference to cancel threads gracefully
+        self._executor = None 
+        self.scan_results = {}  # Fixed: Keep track of results natively
+
+    def ping_host(self, target_ip):
+        """Performs an ICMP ping check to see if the host is up before scanning."""
+        # Determine current operating system flag for ping count
+        param = '-n' if platform.system().lower() == 'windows' else '-c'
+        command = ['ping', param, '1', target_ip]
+        
+        try:
+            # Run background ping without spawning a black CMD window
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=2.0)
+            return result.returncode == 0
+        except Exception:
+            return False
 
     def grab_banner(self, s):
         """Attempts to retrieve the service identification string."""
@@ -62,7 +78,6 @@ class ScannerWorker(QObject):
             return None
 
         try:
-            # Connect always using IP to eliminate repetitive internal thread DNS looks
             with socket.create_connection((target_ip, port), timeout=self.timeout) as s:
                 try:
                     service = socket.getservbyport(port)
@@ -71,20 +86,16 @@ class ScannerWorker(QObject):
 
                 banner = None
 
-                # HTTP probing
                 if port in (80, 8080):
                     banner = self._probe_http(s, target_hostname)
-                    if not banner:  # Fallback
+                    if not banner:  
                         banner = self.grab_banner(s)
-
-                # HTTPS probing
                 elif port == 443:
                     try:
                         context = ssl.create_default_context()
                         context.check_hostname = False
                         context.verify_mode = ssl.CERT_NONE
 
-                        # Pass target_hostname for exact SNI matching
                         with context.wrap_socket(s, server_hostname=target_hostname) as tls_sock:
                             tls_sock.settimeout(self.timeout)
                             banner = self._probe_http(tls_sock, target_hostname)
@@ -100,17 +111,23 @@ class ScannerWorker(QObject):
     def run_scan(self, target, start_port, end_port):
         """Orchestrates the multi-threaded scanning process."""
         self._is_running = True
-        scan_results = {} 
+        self.scan_results = {} 
         self.log_signal.emit(f"[*] Initializing deep scan on {target}...")
 
         try:
-            # Cache the underlying target IP and retain the original hostname string
             addr_info = socket.getaddrinfo(target, None)[0]
             target_ip = addr_info[4][0]
         except socket.gaierror:
             self.log_signal.emit("[!] Error: Resolution failed.")
             self.finished_signal.emit({})
             return
+
+        # --- Extra Pre-Check: Ping Host ---
+        self.log_signal.emit("[*] Checking if host is online (Ping)...")
+        if not self.ping_host(target_ip):
+            self.log_signal.emit("[⚠️] Warning: Host did not respond to ICMP ping. Proceeding with port scan anyway...")
+        else:
+            self.log_signal.emit("[+] Host is online and responding.")
 
         ports = range(start_port, end_port + 1)
         total = len(ports)
@@ -119,7 +136,6 @@ class ScannerWorker(QObject):
             self.finished_signal.emit({})
             return
 
-        # Use context manager but track the executor reference instance for cancellation
         with ThreadPoolExecutor(max_workers=100) as executor:
             self._executor = executor
             future_to_port = {
@@ -140,14 +156,13 @@ class ScannerWorker(QObject):
                 
                 if res:
                     port, service, banner = res
-                    scan_results[port] = {"service": service, "banner": banner}
+                    self.scan_results[port] = {"service": service, "banner": banner}
                     output = f"[+] [OPEN] Port {port:<5} | Service: {service}"
                     
                     if banner and banner.strip():
                         clean_banner = banner.splitlines()[0][:100].strip()
                         output += f"\n    ┗━ [BANNER]: {clean_banner}"
                     
-                    # Append security quick-tip suggestion if known port
                     if port in SUGGESTIONS:
                         output += f"\n    ┗━ [NOTE]: {SUGGESTIONS[port]}"
                         
@@ -158,11 +173,9 @@ class ScannerWorker(QObject):
                     self.progress_signal.emit(int(((i + 1) / total) * 100))
 
         self.log_signal.emit(f"\n--- Scan Finished: {datetime.now().strftime('%H:%M:%S')} ---")
-        self.finished_signal.emit(scan_results)
+        self.finished_signal.emit(self.scan_results)
 
     def stop(self):
-        """Immediately halts the tracking iteration loop and voids un-run worker threads."""
         self._is_running = False
         if self._executor:
-            # cancel_futures=True safely dumps pending tasks in python 3.9+
             self._executor.shutdown(wait=False, cancel_futures=True)
